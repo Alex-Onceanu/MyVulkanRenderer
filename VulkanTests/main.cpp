@@ -34,10 +34,14 @@ protected:
     vk::Pipeline graphicsPipeline;
     std::vector<vk::Framebuffer> swapChainFrameBuffers; // à chaque imageview de la swapchain son buffer de rendu
     vk::CommandPool commandPool;
+    int currentFrame;
+    bool windowResized;
+    
+    // pour chaque frame in flight
     std::vector<vk::CommandBuffer, std::allocator<vk::CommandBuffer>> commandBuffers;
-    vk::Semaphore imageAvailable;
-    vk::Semaphore readyForPresentation;
-    vk::Fence readyForNextFrame;
+    std::vector<vk::Semaphore> imageAvailableSemaphores;
+    std::vector<vk::Semaphore> readyForPresentationSemaphores;
+    std::vector<vk::Fence> readyForNextFrameFences;
     
     const std::vector<const char*> deviceRequiredExtensions = {
 #ifdef __APPLE__
@@ -48,6 +52,8 @@ protected:
     };
     const int WINDOW_WIDTH = 800;
     const int WINDOW_HEIGHT = 600;
+    
+    const int NB_FRAMES_IN_FLIGHT = 2;
     
 #ifdef DEBUG
     // Validation layer : couche custom de debug pour pas que ça plante sans savoir pk
@@ -81,8 +87,16 @@ protected:
         glfwInit();
         
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Hello triangle !", nullptr, nullptr);
+        glfwSetWindowUserPointer(window, this);
+        glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+    }
+    
+    static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
+    {
+        auto staticThis = reinterpret_cast<VulkanTester*>(glfwGetWindowUserPointer(window));
+        staticThis->windowResized = true;
     }
     
     std::vector<const char*> getRequiredExtensions()
@@ -486,6 +500,44 @@ protected:
         surface = vk::SurfaceKHR(tmpSurface);
     }
     
+    void cleanupSwapChain()
+    {
+        for(auto& frameBuffer : swapChainFrameBuffers)
+        {
+            logicalDevice->destroyFramebuffer(frameBuffer);
+        }
+        swapChainFrameBuffers.clear();
+        
+        for (auto imageView : swapChainImageViews)
+        {
+            logicalDevice->destroyImageView(imageView);
+        }
+        swapChainImageViews.clear();
+        
+        logicalDevice->destroySwapchainKHR(swapChain);
+    }
+    
+    void recreateSwapChain()
+    {
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(window, &width, &height);
+        
+//        std::cout << "C'est parti pour une nouvelle swap chain de taille " << width << ", " << height << " !!" << std::endl;
+        
+        while(width == 0 or height == 0)
+        {
+            glfwGetFramebufferSize(window, &width, &height);
+            glfwWaitEvents();
+        }
+        
+        logicalDevice->waitIdle();
+        cleanupSwapChain();
+        
+        createSwapChain();
+        createImageViews();
+        createFrameBuffers();
+    }
+    
     void createSwapChain()
     {
         SwapChainSupportDetails swapChainSupport = querySwapChainSupport(physicalDevice);
@@ -592,17 +644,11 @@ protected:
     
     static std::vector<char> readFile(const std::string& filename)
     {
-        std::cout << "go file" << std::endl;
         std::ifstream file(filename, std::ios::ate | std::ios::binary);
         
         if(not file.is_open())
         {
-            std::cout << "no shader ???" << std::endl;
             throw std::runtime_error("File not found : " + filename);
-        }
-        else
-        {
-            std::cout << "shaders ouverts OK" <<std::endl;
         }
         
         // On a ouvert le fichier à la fin pour savoir sa taille
@@ -612,8 +658,6 @@ protected:
         // On revient au début du fichier pour lire fileSize octets
         file.seekg(0);
         file.read(buffer.data(), fileSize);
-        
-        std::cout << "shaders lus OK" <<std::endl;
         
         file.close();
         
@@ -719,16 +763,16 @@ protected:
         vk::PipelineShaderStageCreateInfo stages[2] = {vertpssCreateInfo, fragpssCreateInfo};
         
         // Paramètres de la pipeline qu'on préfère spécifier à chaque draw call
-//        std::vector<vk::DynamicState> dynamicStates = {
-//            vk::DynamicState::eViewport,
-//            vk::DynamicState::eScissor
-//        };
-//        
-//        vk::PipelineDynamicStateCreateInfo pdsCreateInfo{
-//            .flags = vk::PipelineDynamicStateCreateFlags(),
-//            .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
-//            .pDynamicStates = dynamicStates.data()
-//        };
+        std::vector<vk::DynamicState> dynamicStates = {
+            vk::DynamicState::eViewport,
+            vk::DynamicState::eScissor
+        };
+        
+        vk::PipelineDynamicStateCreateInfo pdsCreateInfo{
+            .flags = vk::PipelineDynamicStateCreateFlags(),
+            .dynamicStateCount = static_cast<uint32_t>(dynamicStates.size()),
+            .pDynamicStates = dynamicStates.data()
+        };
         
         // vertex buffer, mais on envoie 0 vertex (hard-coded dans triangle.vert)
         vk::PipelineVertexInputStateCreateInfo pvisCreateInfo{
@@ -762,7 +806,7 @@ protected:
             .extent = swapChainExtent
         };
         
-        // Ici viewport et scissor sont statiques, donc on les envoie au moment de créer la pipeline
+        // Si viewport et scissor sont statiques, on les envoie au moment de créer la pipeline
         vk::PipelineViewportStateCreateInfo pvsCreateInfo{
             .flags          = vk::PipelineViewportStateCreateFlags(),
             .viewportCount  = 1,
@@ -845,7 +889,7 @@ protected:
             .pMultisampleState      = &pmsCreateInfo,
             .pDepthStencilState     = nullptr,  // pas de depth/stencil buffer
             .pColorBlendState       = &pcbsCreateInfo,
-//            .pDynamicState          = &pdsCreateInfo,
+            .pDynamicState          = &pdsCreateInfo,
             .layout                 = pipelineLayout,
             .renderPass             = renderPass,
             .subpass                = 0,
@@ -932,23 +976,23 @@ protected:
         
         commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, graphicsPipeline);
         
-//        vk::Viewport viewport{
-//            .x          = 0.0f,
-//            .y          = 0.0f,
-//            .width      = static_cast<float>(swapChainExtent.width),
-//            .height     = static_cast<float>(swapChainExtent.width),
-//            .minDepth   = 0.0f,
-//            .maxDepth   = 1.0f
-//        };
-//        
-//        commandBuffer.setViewport(0, 1, &viewport);
-//        
-//        vk::Rect2D scissor {
-//            .offset = { 0,0 },
-//            .extent = swapChainExtent
-//        };
-//        
-//        commandBuffer.setScissor(0, 1, &scissor);
+        vk::Viewport viewport{
+            .x          = 0.0f,
+            .y          = 0.0f,
+            .width      = static_cast<float>(swapChainExtent.width),
+            .height     = static_cast<float>(swapChainExtent.height),
+            .minDepth   = 0.0f,
+            .maxDepth   = 1.0f
+        };
+        
+        commandBuffer.setViewport(0, 1, &viewport);
+        
+        vk::Rect2D scissor {
+            .offset = { 0,0 },
+            .extent = swapChainExtent
+        };
+        
+        commandBuffer.setScissor(0, 1, &scissor);
         
         // nb de vertex, nb d'instances (cf instanced rendering ?), offset pour vertex et instance
         commandBuffer.draw(3, 1, 0, 0);
@@ -965,7 +1009,7 @@ protected:
     
     void createCommandBuffers()
     {
-        commandBuffers.resize(swapChainFrameBuffers.size());
+        commandBuffers.resize(NB_FRAMES_IN_FLIGHT);
         
         vk::CommandBufferAllocateInfo allocInfo {
             .commandPool = commandPool,
@@ -984,6 +1028,7 @@ protected:
         {
             recordCommandBuffer(commandBuffers[i], (uint32_t)i);
         }
+        
     }
     
     void createSyncObjects()
@@ -992,6 +1037,11 @@ protected:
         // puis que le rendu ait été fini dessus pour la présenter à l'écran
         // 1 fence (= sémaphore pour le CPU) : l'exécution attend la fin de la frame
         // pour pas faire le rendu de 2 frames en même temps
+        // et on fait ça pour chaque frame in flight
+        
+        imageAvailableSemaphores.resize(NB_FRAMES_IN_FLIGHT);
+        readyForPresentationSemaphores.resize(NB_FRAMES_IN_FLIGHT);
+        readyForNextFrameFences.resize(NB_FRAMES_IN_FLIGHT);
         
         vk::FenceCreateInfo fenceInfo {
             // On crée le fence en état "signalé" pour pas que le premier draw call attende indéfiniment
@@ -999,9 +1049,12 @@ protected:
         };
         
         try {
-            imageAvailable = logicalDevice->createSemaphore({});
-            readyForPresentation = logicalDevice->createSemaphore({});
-            readyForNextFrame = logicalDevice->createFence(fenceInfo);
+            for(int i = 0; i < NB_FRAMES_IN_FLIGHT; i++)
+            {
+                imageAvailableSemaphores[i] = logicalDevice->createSemaphore({});
+                readyForPresentationSemaphores[i] = logicalDevice->createSemaphore({});
+                readyForNextFrameFences[i] = logicalDevice->createFence(fenceInfo);
+            }
         } catch (vk::SystemError err) {
             throw std::runtime_error("Failed to create semaphores / fence.");
         }
@@ -1063,15 +1116,30 @@ protected:
     void drawFrame()
     {
         // On commence par attendre que la frame précédente soit finie
-        logicalDevice->waitForFences(1, &readyForNextFrame, vk::True, UINT64_MAX);
-        logicalDevice->resetFences(1, &readyForNextFrame);
+        if(logicalDevice->waitForFences(1, &readyForNextFrameFences[currentFrame], vk::True, UINT64_MAX) != vk::Result::eSuccess)
+        {
+            throw std::runtime_error("Timeout or error during waitForFences !");
+        }
         
         // Obtient la prochaine image dispo de la swap chain, et puis fait un post dans imageAvailable
-        uint32_t imgId = logicalDevice->acquireNextImageKHR(swapChain, UINT64_MAX, imageAvailable, nullptr).value;
+        uint32_t imgId;
+        try {
+            imgId = logicalDevice->acquireNextImageKHR(swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], nullptr).value;
+        } catch (vk::OutOfDateKHRError(const std::string &msg)) {
+            recreateSwapChain();
+            return;
+        }
+        
+        // On reset le fence uniquement si on doit pas recréer la swap chain (évite une famine)
+        if(logicalDevice->resetFences(1, &readyForNextFrameFences[currentFrame]) != vk::Result::eSuccess)
+        {
+            throw std::runtime_error("Error during resetFences !");
+        }
+        
         
         // Ensuite il faut record ce qu'on veut faire dans commandBuffer, pour l'image d'indice imgId
-        commandBuffers[imgId].reset();
-        recordCommandBuffer(commandBuffers[imgId], (uint32_t)imgId);
+        commandBuffers[currentFrame].reset();
+        recordCommandBuffer(commandBuffers[currentFrame], (uint32_t)imgId);
         
         // On voudra attendre le sémaphore imageAvailable au moment du color attachment (donc entre vert et frag)
         vk::PipelineStageFlags waitStages[] = { vk::PipelineStageFlagBits::eColorAttachmentOutput };
@@ -1079,16 +1147,16 @@ protected:
         // Ensuite on peut submit le command buffer
         vk::SubmitInfo submitInfo {
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &imageAvailable,
+            .pWaitSemaphores = &imageAvailableSemaphores[currentFrame],
             .pWaitDstStageMask = waitStages,
             .commandBufferCount = 1,
-            .pCommandBuffers = &commandBuffers[imgId],
+            .pCommandBuffers = &commandBuffers[currentFrame],
             .signalSemaphoreCount = 1,
-            .pSignalSemaphores = &readyForPresentation
+            .pSignalSemaphores = &readyForPresentationSemaphores[currentFrame]
         };
         
         try {
-            graphicsQueue.submit(submitInfo, readyForNextFrame);
+            graphicsQueue.submit(submitInfo, readyForNextFrameFences[currentFrame]);
         } catch (vk::SystemError err) {
             throw std::runtime_error("Failed to submit draw command buffer in graphics queue.");
         }
@@ -1096,23 +1164,35 @@ protected:
         // Reste plus qu'à envoyer le résultat du rendu à la swap chain pour qu'on puisse le voir
         vk::PresentInfoKHR presentInfo {
             .waitSemaphoreCount = 1,
-            .pWaitSemaphores = &readyForPresentation,
+            .pWaitSemaphores = &readyForPresentationSemaphores[currentFrame],
             .swapchainCount = 1,
             .pSwapchains = &swapChain,
             .pImageIndices = &imgId,
             .pResults = nullptr
         };
         
-        presentQueue.presentKHR(presentInfo);
+        vk::Result presentRes;
+        try {
+            presentRes = presentQueue.presentKHR(presentInfo);
+        } catch (vk::OutOfDateKHRError(const std::string &msg)) {
+            recreateSwapChain();
+            return;
+        }
+        
+        if(presentRes == vk::Result::eSuboptimalKHR or windowResized)
+        {
+            windowResized = false;
+            recreateSwapChain();
+        }
     }
 
     void mainLoop()
     {
         while(!glfwWindowShouldClose(window))
         {
-//            std::cout << "frame !" << std::endl;
             glfwPollEvents();
             drawFrame();
+            currentFrame = (1 + currentFrame) % NB_FRAMES_IN_FLIGHT;
         }
         
         logicalDevice->waitIdle();
@@ -1120,6 +1200,8 @@ protected:
 
 public:
     VulkanTester()
+    : currentFrame(0),
+    windowResized(false)
     {
         initWindow();
         initVulkan();
@@ -1132,26 +1214,20 @@ public:
     
     ~VulkanTester()
     {
-        logicalDevice->destroySemaphore(imageAvailable);
-        logicalDevice->destroySemaphore(readyForPresentation);
-        logicalDevice->destroyFence(readyForNextFrame);
+        for(int i = 0; i < NB_FRAMES_IN_FLIGHT; i++)
+        {
+            logicalDevice->destroySemaphore(imageAvailableSemaphores[i]);
+            logicalDevice->destroySemaphore(readyForPresentationSemaphores[i]);
+            logicalDevice->destroyFence(readyForNextFrameFences[i]);
+        }
+        
+        cleanupSwapChain();
         
         logicalDevice->destroyCommandPool(commandPool);
-        
-        for(auto& frameBuffer : swapChainFrameBuffers)
-        {
-            logicalDevice->destroyFramebuffer(frameBuffer);
-        }
         
         logicalDevice->destroyPipeline(graphicsPipeline);
         logicalDevice->destroyPipelineLayout(pipelineLayout);
         logicalDevice->destroyRenderPass(renderPass);
-        
-        for (auto imageView : swapChainImageViews)
-        {
-            logicalDevice->destroyImageView(imageView);
-        }
-        logicalDevice->destroySwapchainKHR(swapChain);
         
 #ifdef DEBUG
         destroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
