@@ -11,8 +11,44 @@
 #include <cstdint> // uint32_t
 #include <limits>  // std::numeric_limits
 #include <fstream>
+#include <array>
+
+#include "math.hpp"
 
 #define CLAMP(val, minval, maxval) (val > maxval ? maxval : (val < minval ? minval : val))
+
+struct Vertex
+{
+    math::vec2 pos;
+    math::vec3 clr;
+    
+    static vk::VertexInputBindingDescription getBindingDescription()
+    {
+        return {
+            .binding = 0,
+            .stride = sizeof(Vertex),
+            .inputRate = vk::VertexInputRate::eVertex
+        };
+    }
+    
+    static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
+    {
+        return std::array<vk::VertexInputAttributeDescription, 2>({
+            {
+                .binding = 0,
+                .location = 0,
+                .format = vk::Format::eR32G32Sfloat,
+                .offset = offsetof(Vertex, pos)
+            },
+            {
+                .binding = 0,
+                .location = 1,
+                .format = vk::Format::eR32G32B32Sfloat,
+                .offset = offsetof(Vertex, pos)
+            }
+        });
+    }
+};
 
 class VulkanTester
 {
@@ -37,11 +73,24 @@ protected:
     int currentFrame;
     bool windowResized;
     
+    std::vector<Vertex> vertices = {
+        { { -1.,-1. },{ 1.,0.,0. } },
+        { { -1., 1. },{ 0.,1.,0. } },
+        { {  1.,-1. },{ 0.,0.,1. } },
+        
+        { { -1., 1. },{ 0.,1.,0. } },
+        { {  1., 1. },{ 1.,0.,0. } },
+        { {  1.,-1. },{ 0.,0.,1. } }
+    };
+    
     // pour chaque frame in flight
     std::vector<vk::CommandBuffer, std::allocator<vk::CommandBuffer>> commandBuffers;
     std::vector<vk::Semaphore> imageAvailableSemaphores;
     std::vector<vk::Semaphore> readyForPresentationSemaphores;
     std::vector<vk::Fence> readyForNextFrameFences;
+    
+    vk::UniqueBuffer vertexBuffer;
+    vk::UniqueDeviceMemory vertexBufferMemory;
     
     const std::vector<const char*> deviceRequiredExtensions = {
 #ifdef __APPLE__
@@ -779,13 +828,16 @@ protected:
             .pDynamicStates = dynamicStates.data()
         };
         
-        // vertex buffer, mais on envoie 0 vertex (hard-coded dans triangle.vert)
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+        
+        // On met les vertex dans la pipeline (pas encore le VBO)
         vk::PipelineVertexInputStateCreateInfo pvisCreateInfo{
             .flags                              = vk::PipelineVertexInputStateCreateFlags(),
-            .vertexBindingDescriptionCount      = 0,
-            .pVertexBindingDescriptions         = nullptr,
-            .vertexAttributeDescriptionCount    = 0,
-            .pVertexAttributeDescriptions       = nullptr
+            .vertexBindingDescriptionCount      = 1,
+            .pVertexBindingDescriptions         = &bindingDescription,
+            .vertexAttributeDescriptionCount    = static_cast<uint32_t>(attributeDescriptions.size()),
+            .pVertexAttributeDescriptions       = attributeDescriptions.data()
         };
         
         // Input assembly : comment interpréter les vertex pour en faire des primitives ?
@@ -984,8 +1036,12 @@ protected:
         
         commandBuffer.setScissor(0, 1, &scissor);
         
+        vk::Buffer allVertexBuffers[]{ *vertexBuffer };
+        vk::DeviceSize offsets[]{ 0 };
+        commandBuffer.bindVertexBuffers(0, 1, allVertexBuffers, offsets);
+        
         // nb de vertex, nb d'instances (cf instanced rendering ?), offset pour vertex et instance
-        commandBuffer.draw(3, 1, 0, 0);
+        commandBuffer.draw(static_cast<uint32_t>(vertices.size()), 1, 0, 0);
         
         commandBuffer.endRenderPass();
         
@@ -1050,6 +1106,46 @@ protected:
         }
     }
     
+    uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties)
+    {
+        vk::PhysicalDeviceMemoryProperties memProperties = physicalDevice.getMemoryProperties();
+
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+            if ((typeFilter & (1 << i)) and (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+                return i;
+        }
+
+        throw std::runtime_error("Found no compatible memory type.");
+    }
+    
+    void createVertexBuffer()
+    {
+        
+        vk::BufferCreateInfo bufferInfo{
+            .size = sizeof(vertices[0]) * vertices.size(),
+            .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+            .sharingMode = vk::SharingMode::eExclusive  // car utilisé par 1 seule family queue
+        };
+        
+        vertexBuffer = logicalDevice->createBufferUnique(bufferInfo);
+
+        vk::MemoryRequirements memReq = logicalDevice->getBufferMemoryRequirements(*vertexBuffer);
+    
+        
+        vk::MemoryAllocateInfo allocInfo{
+            .allocationSize = memReq.size,
+            .memoryTypeIndex = findMemoryType(memReq.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)
+        };
+        
+        vertexBufferMemory = logicalDevice->allocateMemoryUnique(allocInfo);
+
+        logicalDevice->bindBufferMemory(*vertexBuffer, *vertexBufferMemory, 0);
+
+        void* data = logicalDevice->mapMemory(*vertexBufferMemory, 0, bufferInfo.size);
+        memcpy(data, vertices.data(), (size_t)bufferInfo.size);
+        logicalDevice->unmapMemory(*vertexBufferMemory);
+    }
+    
     void initVulkan()
     {
         std::vector<vk::ExtensionProperties> extensions = vk::enumerateInstanceExtensionProperties(nullptr);
@@ -1095,6 +1191,9 @@ protected:
         
         // Tableau de command buffers. Mais on en a un seul
         createCommandPool();
+        
+        // Créer le VBO qui contient les vertex avec leurs attributs et tout
+        createVertexBuffer();
         
         // Enregistrement des commandes qu'on veut faire pour le draw call
         createCommandBuffers();
