@@ -91,6 +91,11 @@ protected:
         window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Hello triangle !", nullptr, nullptr);
         glfwSetWindowUserPointer(window, this);
         glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
+        glfwSetWindowAspectRatio(window, WINDOW_WIDTH, WINDOW_HEIGHT);
+        
+        const int MIN_WIDTH = 160;
+        const int MIN_HEIGHT = MIN_WIDTH * WINDOW_HEIGHT / WINDOW_WIDTH;
+        glfwSetWindowSizeLimits(window, MIN_WIDTH, MIN_HEIGHT, GLFW_DONT_CARE, GLFW_DONT_CARE);
     }
     
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
@@ -791,28 +796,13 @@ protected:
             .primitiveRestartEnable = vk::False // réutiliser les 2 dernier vertex du triangle
         };
         
-        // cf image sur viewport et scissor
-        vk::Viewport viewport{
-            .x          = 0.0f,
-            .y          = 0.0f,
-            .width      = static_cast<float>(swapChainExtent.width),
-            .height     = static_cast<float>(swapChainExtent.height),
-            .minDepth   = 0.0f,
-            .maxDepth   = 1.0f
-        };
-        
-        vk::Rect2D scissor{
-            .offset = { 0,0 },
-            .extent = swapChainExtent
-        };
-        
-        // Si viewport et scissor sont statiques, on les envoie au moment de créer la pipeline
+        // Ici on enverrait le viewport et scissor s'ils étaient statiques
         vk::PipelineViewportStateCreateInfo pvsCreateInfo{
             .flags          = vk::PipelineViewportStateCreateFlags(),
             .viewportCount  = 1,
-            .pViewports     = &viewport,
+            .pViewports     = nullptr,
             .scissorCount   = 1,
-            .pScissors      = &scissor
+            .pScissors      = nullptr
         };
         
         vk::PipelineRasterizationStateCreateInfo prsCreateInfo{
@@ -1131,7 +1121,8 @@ protected:
         }
         
         // On reset le fence uniquement si on doit pas recréer la swap chain (évite une famine)
-        if(logicalDevice->resetFences(1, &readyForNextFrameFences[currentFrame]) != vk::Result::eSuccess)
+        if(logicalDevice->resetFences(1, &readyForNextFrameFences[currentFrame])
+            != vk::Result::eSuccess)
         {
             throw std::runtime_error("Error during resetFences !");
         }
