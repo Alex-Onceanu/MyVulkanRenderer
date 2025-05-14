@@ -12,6 +12,7 @@
 #include <limits>  // std::numeric_limits
 #include <fstream>
 #include <array>
+#include <ctime>
 
 #include "math.hpp"
 
@@ -1118,32 +1119,88 @@ protected:
         throw std::runtime_error("Found no compatible memory type.");
     }
     
-    void createVertexBuffer()
+    void createBuffer(vk::DeviceSize size,
+                      vk::BufferUsageFlags usage,
+                      vk::MemoryPropertyFlags properties,
+                      vk::UniqueBuffer& buffer,
+                      vk::UniqueDeviceMemory& bufferMemory)
     {
-        
         vk::BufferCreateInfo bufferInfo{
-            .size = sizeof(vertices[0]) * vertices.size(),
-            .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+            .size = size,
+            .usage = usage,
             .sharingMode = vk::SharingMode::eExclusive  // car utilisé par 1 seule family queue
         };
         
-        vertexBuffer = logicalDevice->createBufferUnique(bufferInfo);
+        buffer = logicalDevice->createBufferUnique(bufferInfo);
 
-        vk::MemoryRequirements memReq = logicalDevice->getBufferMemoryRequirements(*vertexBuffer);
+        vk::MemoryRequirements memReq = logicalDevice->getBufferMemoryRequirements(*buffer);
     
-        
         vk::MemoryAllocateInfo allocInfo{
             .allocationSize = memReq.size,
             .memoryTypeIndex = findMemoryType(memReq.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent)
         };
         
-        vertexBufferMemory = logicalDevice->allocateMemoryUnique(allocInfo);
+        bufferMemory = logicalDevice->allocateMemoryUnique(allocInfo);
 
-        logicalDevice->bindBufferMemory(*vertexBuffer, *vertexBufferMemory, 0);
-
-        void* data = logicalDevice->mapMemory(*vertexBufferMemory, 0, bufferInfo.size);
-        memcpy(data, vertices.data(), (size_t)bufferInfo.size);
-        logicalDevice->unmapMemory(*vertexBufferMemory);
+        logicalDevice->bindBufferMemory(*buffer, *bufferMemory, 0);
+    }
+    
+    void copyBuffer(vk::Buffer srcBuf, vk::Buffer dstBuf, vk::DeviceSize size)
+    {
+        vk::CommandBufferAllocateInfo allocInfo {
+            .level = vk::CommandBufferLevel::ePrimary,
+            .commandPool = commandPool,
+            .commandBufferCount = 1
+        };
+        
+        vk::CommandBuffer commandBuffer = logicalDevice->allocateCommandBuffers(allocInfo)[0];
+        
+        vk::CommandBufferBeginInfo beginInfo {
+            .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit
+        };
+        
+        commandBuffer.begin(beginInfo);
+        
+        vk::BufferCopy copyRegion {
+            .size = size
+        };
+        
+        commandBuffer.copyBuffer(srcBuf, dstBuf, 1, &copyRegion);
+        commandBuffer.end();
+        
+        vk::SubmitInfo submitInfo {
+            .commandBufferCount = 1,
+            .pCommandBuffers = &commandBuffer
+        };
+        
+        graphicsQueue.submit(submitInfo);
+        graphicsQueue.waitIdle();
+        
+        logicalDevice->freeCommandBuffers(commandPool, 1, &commandBuffer);
+    }
+    
+    void createVertexBuffer()
+    {
+        vk::DeviceSize bufSize = vertices.size() * sizeof(vertices[0]);
+        
+        // Un staging buffer sert à pouvoir avoir un vbuf avec VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        // mais dcp elle est pas mappable sur cpu donc il faut passer par un intermédiaire (staging buf)
+        vk::UniqueBuffer stagingBuffer;
+        vk::UniqueDeviceMemory stagingBufferMemory;
+        
+        createBuffer(bufSize, vk::BufferUsageFlagBits::eTransferSrc,
+                     vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostVisible,
+                     stagingBuffer, stagingBufferMemory);
+        
+        // on met vertices dans le staging buffer
+        void* data = logicalDevice->mapMemory(*stagingBufferMemory, 0, bufSize);
+        memcpy(data, vertices.data(), (size_t)bufSize);
+        logicalDevice->unmapMemory(*stagingBufferMemory);
+        
+        // on met le staging buffer dans le vrai vertex buffer
+        createBuffer(bufSize, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer, vk::MemoryPropertyFlagBits::eDeviceLocal, vertexBuffer, vertexBufferMemory);
+        
+        copyBuffer(*stagingBuffer, *vertexBuffer, bufSize);
     }
     
     void initVulkan()
@@ -1275,19 +1332,7 @@ protected:
             recreateSwapChain();
         }
     }
-
-    void mainLoop()
-    {
-        while(!glfwWindowShouldClose(window))
-        {
-            glfwPollEvents();
-            drawFrame();
-            currentFrame = (1 + currentFrame) % NB_FRAMES_IN_FLIGHT;
-        }
-        
-        logicalDevice->waitIdle();
-    }
-
+    
 public:
     VulkanTester()
     : currentFrame(0),
@@ -1299,7 +1344,14 @@ public:
     
     void run()
     {
-        mainLoop();
+        while(!glfwWindowShouldClose(window))
+        {
+            glfwPollEvents();
+            drawFrame();
+            currentFrame = (1 + currentFrame) % NB_FRAMES_IN_FLIGHT;
+        }
+        
+        logicalDevice->waitIdle();
     }
     
     ~VulkanTester()
