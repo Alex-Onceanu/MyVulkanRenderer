@@ -74,14 +74,16 @@ protected:
     int currentFrame;
     bool windowResized;
     
-    std::vector<Vertex> vertices = {
+    const std::vector<Vertex> vertices {
         { { -1.,-1. },{ 1.,0.,0. } },
         { { -1., 1. },{ 0.,1.,0. } },
-        { {  1.,-1. },{ 0.,0.,1. } },
-        
-        { { -1., 1. },{ 0.,1.,0. } },
-        { {  1., 1. },{ 1.,0.,0. } },
-        { {  1.,-1. },{ 0.,0.,1. } }
+        { {  1., 1. },{ 0.,0.,1. } },
+        { {  1.,-1. },{ 1.,0.,1. } }
+    };
+    
+    const std::vector<uint16_t> indices {
+        0, 1, 3,
+        3, 1, 2
     };
     
     // pour chaque frame in flight
@@ -92,6 +94,8 @@ protected:
     
     vk::UniqueBuffer vertexBuffer;
     vk::UniqueDeviceMemory vertexBufferMemory;
+    vk::UniqueBuffer indexBuffer;
+    vk::UniqueDeviceMemory indexBufferMemory;
     
     const std::vector<const char*> deviceRequiredExtensions = {
 #ifdef __APPLE__
@@ -320,6 +324,7 @@ protected:
         };
     }
     
+    // Une queue family c'est un certain type de queues (elles sont catégorisées selon ce à quoi elles servent)
     QueueFamilyIndices findQueueFamilies(vk::PhysicalDevice device)
     {
         QueueFamilyIndices indices;
@@ -494,8 +499,8 @@ protected:
     void createLogicalDevice()
     {
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
-        // On peut avoir plusieurs "queues" pour chaque "queueFamily" ?? Et à quoi sert la priorité d'une queue ??
-        // Pour schedule des commandes depuis plusieurs threads et ensuite tout submit d'un coup sur le main thread ..?
+        // si on soumet des instructions au GPU en même temps via 2 queues de la même queue family,
+        // le gpu va traiter en priorité les commandes de la queue avec la plus grande priorité
         float qPriority = 1.0f; // On va passer a pQueuePriorities un tableau de priorités, ici juste &qPriority
         std::vector<vk::DeviceQueueCreateInfo> allQueuesCreateInfo;
         
@@ -1040,9 +1045,10 @@ protected:
         vk::Buffer allVertexBuffers[]{ *vertexBuffer };
         vk::DeviceSize offsets[]{ 0 };
         commandBuffer.bindVertexBuffers(0, 1, allVertexBuffers, offsets);
+        commandBuffer.bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint16);
         
         // nb de vertex, nb d'instances (cf instanced rendering ?), offset pour vertex et instance
-        commandBuffer.draw(static_cast<uint32_t>(vertices.size()), 1, 0, 0);
+        commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
         
         commandBuffer.endRenderPass();
         
@@ -1203,6 +1209,30 @@ protected:
         copyBuffer(*stagingBuffer, *vertexBuffer, bufSize);
     }
     
+    void createIndexBuffer()
+    {
+        vk::DeviceSize bufSize = indices.size() * sizeof(indices[0]);
+        
+        // Un staging buffer sert à pouvoir avoir un vbuf avec VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+        // mais dcp elle est pas mappable sur cpu donc il faut passer par un intermédiaire (staging buf)
+        vk::UniqueBuffer stagingBuffer;
+        vk::UniqueDeviceMemory stagingBufferMemory;
+        
+        createBuffer(bufSize, vk::BufferUsageFlagBits::eTransferSrc,
+                     vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostVisible,
+                     stagingBuffer, stagingBufferMemory);
+        
+        // on met les index dans le staging buffer
+        void* data = logicalDevice->mapMemory(*stagingBufferMemory, 0, bufSize);
+        memcpy(data, indices.data(), (size_t)bufSize);
+        logicalDevice->unmapMemory(*stagingBufferMemory);
+        
+        // on met le staging buffer dans le vrai index buffer
+        createBuffer(bufSize, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer, vk::MemoryPropertyFlagBits::eDeviceLocal, indexBuffer, indexBufferMemory);
+        
+        copyBuffer(*stagingBuffer, *indexBuffer, bufSize);
+    }
+    
     void initVulkan()
     {
         std::vector<vk::ExtensionProperties> extensions = vk::enumerateInstanceExtensionProperties(nullptr);
@@ -1251,6 +1281,9 @@ protected:
         
         // Créer le VBO qui contient les vertex avec leurs attributs et tout
         createVertexBuffer();
+        
+        // Index buffer pour éviter les doublons de vertex
+        createIndexBuffer();
         
         // Enregistrement des commandes qu'on veut faire pour le draw call
         createCommandBuffers();
