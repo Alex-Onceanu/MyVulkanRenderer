@@ -12,7 +12,7 @@
 #include <limits>  // std::numeric_limits
 #include <fstream>
 #include <array>
-#include <ctime>
+#include <chrono>
 
 #include "math.hpp"
 
@@ -51,6 +51,11 @@ struct Vertex
     }
 };
 
+struct UniformBufferObject {
+    alignas(4) float uTime;
+    alignas(16) math::vec3 uClr;
+};
+
 class VulkanTester
 {
 protected:
@@ -67,10 +72,13 @@ protected:
     std::vector<vk::Image> swapChainImages;
     std::vector<vk::ImageView> swapChainImageViews;
     vk::RenderPass renderPass; // lien entre résultat du fragment shader et image (color buff) du swapchain
-    vk::PipelineLayout pipelineLayout; // envoie d'uniform dans les shaders
+    vk::DescriptorSetLayout descriptorSetLayout; // description de comment lier l'UBO du CPU avec celui du GPU
+    vk::PipelineLayout pipelineLayout; // envoi d'uniform dans les shaders
     vk::Pipeline graphicsPipeline;
     std::vector<vk::Framebuffer> swapChainFrameBuffers; // à chaque imageview de la swapchain son buffer de rendu
     vk::CommandPool commandPool;
+    vk::UniqueDescriptorPool descriptorPool;
+    std::vector<vk::DescriptorSet> descriptorSets;
     int currentFrame;
     bool windowResized;
     
@@ -96,6 +104,10 @@ protected:
     vk::UniqueDeviceMemory vertexBufferMemory;
     vk::UniqueBuffer indexBuffer;
     vk::UniqueDeviceMemory indexBufferMemory;
+    
+    std::vector<vk::UniqueBuffer> uniformBuffers;
+    std::vector<vk::UniqueDeviceMemory> uniformBuffersMemory;
+    std::vector<void*> uniformBuffersMapped;
     
     const std::vector<const char*> deviceRequiredExtensions = {
 #ifdef __APPLE__
@@ -777,7 +789,6 @@ protected:
             .srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput,
             .dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput,
             .dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eColorAttachmentWrite
-
         };
         
         vk::RenderPassCreateInfo rpCreateInfo{
@@ -798,7 +809,6 @@ protected:
     
     void createGraphicsPipeline()
     {
-        std::cout << "go read shaders !" << std::endl;
         auto vertCode = readFile("vert.spv");
         auto fragCode = readFile("frag.spv");
         
@@ -854,13 +864,27 @@ protected:
             .primitiveRestartEnable = vk::False // réutiliser les 2 dernier vertex du triangle
         };
         
+        vk::Viewport viewport{
+            .x          = 0.0f,
+            .y          = 0.0f,
+            .width      = static_cast<float>(swapChainExtent.width),
+            .height     = static_cast<float>(swapChainExtent.height),
+            .minDepth   = 0.0f,
+            .maxDepth   = 1.0f
+        };
+
+        vk::Rect2D scissor {
+            .offset = { 0,0 },
+            .extent = swapChainExtent
+        };
+        
         // Ici on enverrait le viewport et scissor s'ils étaient statiques
         vk::PipelineViewportStateCreateInfo pvsCreateInfo{
             .flags          = vk::PipelineViewportStateCreateFlags(),
             .viewportCount  = 1,
-            .pViewports     = nullptr,
+            .pViewports     = &viewport,
             .scissorCount   = 1,
-            .pScissors      = nullptr
+            .pScissors      = &scissor
         };
         
         vk::PipelineRasterizationStateCreateInfo prsCreateInfo{
@@ -894,12 +918,6 @@ protected:
             .alphaBlendOp           = vk::BlendOp::eAdd
         };
         
-//        vk::PipelineColorBlendAttachmentState colorBlendAttachment {
-//            .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
-//            .blendEnable = vk::False
-//        };
-        
-        
         vk::PipelineColorBlendStateCreateInfo pcbsCreateInfo{
             .logicOpEnable      = vk::False, // op arithmétiques, pas bitwise
             .logicOp            = vk::LogicOp::eCopy,
@@ -914,18 +932,11 @@ protected:
         
         // Ici on envoie aux shaders des valeurs pour les uniform
         vk::PipelineLayoutCreateInfo plCreateInfo{
-            .setLayoutCount         = 0, // mais 0 uniform ici, optionnel
-//            .pSetLayouts            = nullptr,
-            .pushConstantRangeCount = 0,
-//            .pPushConstantRanges    = nullptr
+            .setLayoutCount         = 1,
+            .pSetLayouts            = &descriptorSetLayout,
         };
         
-        
-        try {
-            pipelineLayout = logicalDevice->createPipelineLayout(plCreateInfo);
-        } catch (vk::SystemError err) {
-            throw std::runtime_error("Failed to create pipeline layout.");
-        }
+        pipelineLayout = logicalDevice->createPipelineLayout(plCreateInfo);
         
         vk::GraphicsPipelineCreateInfo pipelineCreateInfo{
             .stageCount             = 2,
@@ -944,12 +955,8 @@ protected:
             .basePipelineHandle     = nullptr
             // cf dérivée d'une graphics pipeline pour créer une pipeline à partir d'une autre
         };
-        std::cout << "go graphics !" << std::endl;
-        try {
-            graphicsPipeline = logicalDevice->createGraphicsPipeline(nullptr, pipelineCreateInfo).value;
-        } catch (vk::SystemError err) {
-            throw std::runtime_error("Failed to create graphics pipeline.");
-        }
+        
+        graphicsPipeline = logicalDevice->createGraphicsPipeline(nullptr, pipelineCreateInfo).value;
     }
     
     void createFrameBuffers()
@@ -1032,14 +1039,12 @@ protected:
             .minDepth   = 0.0f,
             .maxDepth   = 1.0f
         };
-        
         commandBuffer.setViewport(0, 1, &viewport);
         
         vk::Rect2D scissor {
             .offset = { 0,0 },
             .extent = swapChainExtent
         };
-        
         commandBuffer.setScissor(0, 1, &scissor);
         
         vk::Buffer allVertexBuffers[]{ *vertexBuffer };
@@ -1047,17 +1052,15 @@ protected:
         commandBuffer.bindVertexBuffers(0, 1, allVertexBuffers, offsets);
         commandBuffer.bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint16);
         
+        commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, 1, &descriptorSets[currentFrame], 0, nullptr);
+        
         // nb de vertex, nb d'instances (cf instanced rendering ?), offset pour vertex et instance
         commandBuffer.drawIndexed(static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
         
         commandBuffer.endRenderPass();
         
         // On a fini d'enregistrer ce qu'on veut que commandBuffer fasse
-        try {
-            commandBuffer.end();
-        } catch (vk::SystemError err) {
-            throw std::runtime_error("Failed to stop recording commands in command buffer.");
-        }
+        commandBuffer.end();
     }
     
     void createCommandBuffers()
@@ -1138,6 +1141,7 @@ protected:
         };
         
         buffer = logicalDevice->createBufferUnique(bufferInfo);
+        
 
         vk::MemoryRequirements memReq = logicalDevice->getBufferMemoryRequirements(*buffer);
     
@@ -1159,30 +1163,28 @@ protected:
             .commandBufferCount = 1
         };
         
-        vk::CommandBuffer commandBuffer = logicalDevice->allocateCommandBuffers(allocInfo)[0];
+        vk::UniqueCommandBuffer commandBuffer = std::move(logicalDevice->allocateCommandBuffersUnique(allocInfo)[0]);
         
         vk::CommandBufferBeginInfo beginInfo {
             .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit
         };
         
-        commandBuffer.begin(beginInfo);
+        commandBuffer->begin(beginInfo);
         
         vk::BufferCopy copyRegion {
             .size = size
         };
         
-        commandBuffer.copyBuffer(srcBuf, dstBuf, 1, &copyRegion);
-        commandBuffer.end();
+        commandBuffer->copyBuffer(srcBuf, dstBuf, 1, &copyRegion);
+        commandBuffer->end();
         
         vk::SubmitInfo submitInfo {
             .commandBufferCount = 1,
-            .pCommandBuffers = &commandBuffer
+            .pCommandBuffers = &*commandBuffer
         };
         
         graphicsQueue.submit(submitInfo);
         graphicsQueue.waitIdle();
-        
-        logicalDevice->freeCommandBuffers(commandPool, 1, &commandBuffer);
     }
     
     void createVertexBuffer()
@@ -1233,6 +1235,110 @@ protected:
         copyBuffer(*stagingBuffer, *indexBuffer, bufSize);
     }
     
+    void createUniformBuffers()
+    {
+        vk::DeviceSize bufSize = sizeof(UniformBufferObject);
+        
+        uniformBuffers.resize(NB_FRAMES_IN_FLIGHT);
+        uniformBuffersMemory.resize(NB_FRAMES_IN_FLIGHT);
+        uniformBuffersMapped.resize(NB_FRAMES_IN_FLIGHT);
+        
+        for (size_t i = 0; i < NB_FRAMES_IN_FLIGHT; i++)
+        {
+            createBuffer(bufSize,
+                         vk::BufferUsageFlagBits::eUniformBuffer,
+                         vk::MemoryPropertyFlagBits::eHostCoherent | vk::MemoryPropertyFlagBits::eHostVisible,
+                         uniformBuffers[i],
+                         uniformBuffersMemory[i]);
+            
+            uniformBuffersMapped[i] = logicalDevice->mapMemory(*(uniformBuffersMemory[i]), 0, bufSize);
+        }
+    }
+    
+    void createDescriptorSetLayout()
+    {
+        vk::DescriptorSetLayoutBinding uboLayoutBinding {
+            .binding            = 0,
+            .descriptorType     = vk::DescriptorType::eUniformBuffer,
+            .descriptorCount    = 1,
+            .stageFlags         = vk::ShaderStageFlagBits::eVertex,
+            .pImmutableSamplers = nullptr
+        };
+        
+        vk::DescriptorSetLayoutCreateInfo layoutInfo {
+            .bindingCount   = 1,
+            .pBindings      = &uboLayoutBinding
+        };
+        
+        descriptorSetLayout = logicalDevice->createDescriptorSetLayout(layoutInfo);
+    }
+    
+    void createDescriptorPool()
+    {
+        vk::DescriptorPoolSize poolSize {
+            .type            = vk::DescriptorType::eUniformBuffer,  // ne pas oublier cette ligne haha
+            .descriptorCount = static_cast<uint32_t>(NB_FRAMES_IN_FLIGHT)
+        };
+        
+        vk::DescriptorPoolCreateInfo poolInfo {
+            .poolSizeCount  = 1,
+            .pPoolSizes     = &poolSize,
+            .maxSets        = static_cast<uint32_t>(NB_FRAMES_IN_FLIGHT)
+        };
+        
+        descriptorPool = logicalDevice->createDescriptorPoolUnique(poolInfo);
+    }
+    
+    void createDescriptorSets()
+    {
+        std::vector<vk::DescriptorSetLayout> layouts(NB_FRAMES_IN_FLIGHT, descriptorSetLayout);
+        
+        vk::DescriptorSetAllocateInfo allocInfo {
+            .descriptorPool     = *descriptorPool,
+            .descriptorSetCount = static_cast<uint32_t>(NB_FRAMES_IN_FLIGHT),
+            .pSetLayouts        = layouts.data()
+        };
+        
+        descriptorSets = logicalDevice->allocateDescriptorSets(allocInfo);
+        
+        for (size_t i = 0; i < NB_FRAMES_IN_FLIGHT; i++)
+        {
+            // Ici on met le contenu du UBO dans chaque descriptor set (un par frame-in-flight)
+            vk::DescriptorBufferInfo bufInfo {
+                .buffer = *uniformBuffers[i],
+                .offset = 0,
+                .range  = sizeof(UniformBufferObject)
+            };
+            
+            vk::WriteDescriptorSet descriptorWrite {
+                .dstSet             = descriptorSets[i],
+                .dstBinding         = 0,    // quand on écrit layout(binding = 0) en GLSL on y accède ici à ce 0
+                .dstArrayElement    = 0,
+                .descriptorType     = vk::DescriptorType::eUniformBuffer,
+                .descriptorCount    = 1,
+                .pBufferInfo        = &bufInfo
+            };
+            
+            logicalDevice->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
+        }
+    }
+    
+    void updateUniformBuffer()
+    {
+        // sera calculé une seule fois car static
+        static auto startTime = std::chrono::high_resolution_clock::now();
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        float elapsedTime = std::chrono::duration<float,
+            std::chrono::seconds::period>(currentTime - startTime).count();
+        
+        UniformBufferObject ubo {
+            .uTime  = elapsedTime,
+            .uClr   = math::vec3(0.0, 0.6, 0.8)
+        };
+        
+        memcpy(uniformBuffersMapped[currentFrame], &ubo, sizeof(ubo));
+    }
+    
     void initVulkan()
     {
         std::vector<vk::ExtensionProperties> extensions = vk::enumerateInstanceExtensionProperties(nullptr);
@@ -1268,6 +1374,10 @@ protected:
         // À quoi s'attendre en terme de framebuffer
         createRenderPass();
         
+        // Description de comment associer des uniform GLSL à chaque morceau de l'Uniform Buffer Object
+        // En fait décrit à quoi va ressembler le descriptor set qui lui contiendra les uniform
+        createDescriptorSetLayout();
+        
         // Toutes les infos dont vulkan a besoin pour faire le rendu
         // Il faudra instancier une pipeline graphique à chaque fois qu'on veut modifier les shaders
         createGraphicsPipeline();
@@ -1284,6 +1394,15 @@ protected:
         
         // Index buffer pour éviter les doublons de vertex
         createIndexBuffer();
+        
+        // Contient les valeurs des uniform pour chaque frame in flight
+        createUniformBuffers();
+        
+        // Équivalent de commandPool mais pour uniform buffer
+        createDescriptorPool();
+        
+        // Ce qu'on envoie au GPU (contient les uniform et est décrit par son descriptorSetLayout)
+        createDescriptorSets();
         
         // Enregistrement des commandes qu'on veut faire pour le draw call
         createCommandBuffers();
@@ -1310,12 +1429,7 @@ protected:
         }
         
         // On reset le fence uniquement si on doit pas recréer la swap chain (évite une famine)
-        if(logicalDevice->resetFences(1, &readyForNextFrameFences[currentFrame])
-            != vk::Result::eSuccess)
-        {
-            throw std::runtime_error("Error during resetFences !");
-        }
-        
+        logicalDevice->resetFences(readyForNextFrameFences[currentFrame]);
         
         // Ensuite il faut record ce qu'on veut faire dans commandBuffer, pour l'image d'indice imgId
         commandBuffers[currentFrame].reset();
@@ -1323,6 +1437,8 @@ protected:
         
         // On voudra attendre le sémaphore imageAvailable au moment du color attachment (donc entre vert et frag)
         vk::PipelineStageFlags waitStages[] = { vk::PipelineStageFlagBits::eColorAttachmentOutput };
+        
+        updateUniformBuffer();
         
         // Ensuite on peut submit le command buffer
         vk::SubmitInfo submitInfo {
@@ -1334,12 +1450,8 @@ protected:
             .signalSemaphoreCount = 1,
             .pSignalSemaphores = &readyForPresentationSemaphores[currentFrame]
         };
-        
-        try {
-            graphicsQueue.submit(submitInfo, readyForNextFrameFences[currentFrame]);
-        } catch (vk::SystemError err) {
-            throw std::runtime_error("Failed to submit draw command buffer in graphics queue.");
-        }
+
+        graphicsQueue.submit(submitInfo, readyForNextFrameFences[currentFrame]);
         
         // Reste plus qu'à envoyer le résultat du rendu à la swap chain pour qu'on puisse le voir
         vk::PresentInfoKHR presentInfo {
@@ -1377,9 +1489,23 @@ public:
     
     void run()
     {
+#ifdef DEBUG
+        auto start = std::chrono::high_resolution_clock::now();
+        int nbFrames = 0;
+#endif
+        
         while(!glfwWindowShouldClose(window))
         {
             glfwPollEvents();
+            
+#ifdef DEBUG
+            // Afficher les FPS;
+            auto now = std::chrono::high_resolution_clock::now();
+            std::cout   << ++nbFrames
+                            / std::chrono::duration<float, std::chrono::seconds::period>(now - start).count()
+                        << std::endl;
+#endif
+            
             drawFrame();
             currentFrame = (1 + currentFrame) % NB_FRAMES_IN_FLIGHT;
         }
@@ -1399,6 +1525,7 @@ public:
         cleanupSwapChain();
         
         logicalDevice->destroyCommandPool(commandPool);
+        logicalDevice->destroyDescriptorSetLayout(descriptorSetLayout);
         
         logicalDevice->destroyPipeline(graphicsPipeline);
         logicalDevice->destroyPipelineLayout(pipelineLayout);
