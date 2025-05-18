@@ -34,20 +34,21 @@ struct Vertex
     
     static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
     {
-        return std::array<vk::VertexInputAttributeDescription, 2>({
+        std::array<vk::VertexInputAttributeDescription, 2> res{{
             {
-                .binding = 0,
                 .location = 0,
+                .binding = 0,
                 .format = vk::Format::eR32G32Sfloat,
                 .offset = offsetof(Vertex, pos)
             },
             {
-                .binding = 0,
                 .location = 1,
+                .binding = 0,
                 .format = vk::Format::eR32G32B32Sfloat,
                 .offset = offsetof(Vertex, pos)
             }
-        });
+        }};
+        return res;
     }
 };
 
@@ -544,9 +545,9 @@ protected:
             .flags = vk::DeviceCreateFlags(),
             .queueCreateInfoCount = nbNeededQueues,
             .pQueueCreateInfos = allQueuesCreateInfo.data(),
-            .pEnabledFeatures = &deviceFeatures,
             .enabledExtensionCount = static_cast<uint32_t>(deviceRequiredExtensions.size()),
-            .ppEnabledExtensionNames = deviceRequiredExtensions.data()
+            .ppEnabledExtensionNames = deviceRequiredExtensions.data(),
+            .pEnabledFeatures = &deviceFeatures
         };
         
 #ifdef DEBUG
@@ -809,8 +810,8 @@ protected:
     
     void createGraphicsPipeline()
     {
-        auto vertCode = readFile("vert.spv");
-        auto fragCode = readFile("frag.spv");
+        auto vertCode = readFile("../shaders/out/triangle.vert.spv");
+        auto fragCode = readFile("../shaders/out/triangle.frag.spv");
         
         auto vertModule = createShaderModule(vertCode);
         auto fragModule = createShaderModule(fragCode);
@@ -891,16 +892,16 @@ protected:
             .depthClampEnable           = vk::False, // on discard les fragments en dehors de near et far
             .rasterizerDiscardEnable    = vk::False, // désactiverait le rasterizer
             .polygonMode                = vk::PolygonMode::eFill, // eLine : wireframe, ePoint : vertices
-            .lineWidth                  = 1.0f,
             .cullMode                   = vk::CullModeFlagBits::eBack, // on discard les fragments de dos
             .frontFace                  = vk::FrontFace::eCounterClockwise, // sens trigo <=> de face
-            .depthBiasEnable            = vk::False // on pourrait appliquer une transformation au depth
+            .depthBiasEnable            = vk::False, // on pourrait appliquer une transformation au depth
+            .lineWidth                  = 1.0f
         };
 
         // Multisampling : sert pour faire de l'anti-aliasing (ici désactivé)
         vk::PipelineMultisampleStateCreateInfo pmsCreateInfo{
-            .sampleShadingEnable    = vk::False,
-            .rasterizationSamples   = vk::SampleCountFlagBits::e1
+            .rasterizationSamples   = vk::SampleCountFlagBits::e1,
+            .sampleShadingEnable    = vk::False
         };
         
         // utiliser vk::PipelineDepthStencilStateCreateInfo ici pour depth et/ou stencil buffer
@@ -908,14 +909,14 @@ protected:
         // Avant de colorier un pixel, que faire de la couleur qu'on y trouve ?
         // Nous on va faire un lerp entre nouvelle et ancienne couleur selon alpha
         vk::PipelineColorBlendAttachmentState colorBlendAttachment{
-            .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA,
             .blendEnable            = vk::True,
             .srcColorBlendFactor    = vk::BlendFactor::eSrcAlpha,
             .dstColorBlendFactor    = vk::BlendFactor::eOneMinusSrcAlpha,
             .colorBlendOp           = vk::BlendOp::eAdd,
             .srcAlphaBlendFactor    = vk::BlendFactor::eOne,
             .dstAlphaBlendFactor    = vk::BlendFactor::eZero,
-            .alphaBlendOp           = vk::BlendOp::eAdd
+            .alphaBlendOp           = vk::BlendOp::eAdd,
+            .colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA
         };
         
         vk::PipelineColorBlendStateCreateInfo pcbsCreateInfo{
@@ -1158,8 +1159,8 @@ protected:
     void copyBuffer(vk::Buffer srcBuf, vk::Buffer dstBuf, vk::DeviceSize size)
     {
         vk::CommandBufferAllocateInfo allocInfo {
-            .level = vk::CommandBufferLevel::ePrimary,
             .commandPool = commandPool,
+            .level = vk::CommandBufferLevel::ePrimary,
             .commandBufferCount = 1
         };
         
@@ -1281,9 +1282,9 @@ protected:
         };
         
         vk::DescriptorPoolCreateInfo poolInfo {
+            .maxSets        = static_cast<uint32_t>(NB_FRAMES_IN_FLIGHT),
             .poolSizeCount  = 1,
-            .pPoolSizes     = &poolSize,
-            .maxSets        = static_cast<uint32_t>(NB_FRAMES_IN_FLIGHT)
+            .pPoolSizes     = &poolSize
         };
         
         descriptorPool = logicalDevice->createDescriptorPoolUnique(poolInfo);
@@ -1314,8 +1315,8 @@ protected:
                 .dstSet             = descriptorSets[i],
                 .dstBinding         = 0,    // quand on écrit layout(binding = 0) en GLSL on y accède ici à ce 0
                 .dstArrayElement    = 0,
-                .descriptorType     = vk::DescriptorType::eUniformBuffer,
                 .descriptorCount    = 1,
+                .descriptorType     = vk::DescriptorType::eUniformBuffer,
                 .pBufferInfo        = &bufInfo
             };
             
@@ -1333,7 +1334,7 @@ protected:
         
         UniformBufferObject ubo {
             .uTime  = elapsedTime,
-            .uClr   = math::vec3(0.0, 0.6, 0.8)
+            .uClr   = math::vec3(0.0f, 0.6f, 0.8f)
         };
         
         memcpy(uniformBuffersMapped[currentFrame], &ubo, sizeof(ubo));
