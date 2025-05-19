@@ -1,5 +1,7 @@
 #pragma once
 
+#define CLAMP(val, minval, maxval) (val > maxval ? maxval : (val < minval ? minval : val))
+
 namespace math
 {
     struct vec2
