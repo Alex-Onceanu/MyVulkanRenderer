@@ -163,9 +163,9 @@ namespace
         std::vector<const char*> requiredExtensions = window->getRequiredExtensions();
 
         vk::ApplicationInfo appInfo{
-            .pApplicationName   = "Hello triangle",
+            .pApplicationName   = "Selkie window",
             .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
-            .pEngineName        = "My Engine",
+            .pEngineName        = "Selkie",
             .engineVersion      = VK_MAKE_VERSION(1, 0, 0),
             .apiVersion         = VK_API_VERSION_1_3
         };
