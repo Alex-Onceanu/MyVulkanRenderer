@@ -15,7 +15,7 @@ namespace
     }
 }
 
-rd::Window::Window(int __WINDOW_WIDTH, int __WINDOW_HEIGHT)
+sk::Window::Window(int __WINDOW_WIDTH, int __WINDOW_HEIGHT)
 {
     glfwInit();
 
@@ -30,39 +30,39 @@ rd::Window::Window(int __WINDOW_WIDTH, int __WINDOW_HEIGHT)
     glfwSetWindowSizeLimits(window, MIN_WIDTH, MIN_HEIGHT, GLFW_DONT_CARE, GLFW_DONT_CARE);
 }
 
-rd::Window::~Window()
+sk::Window::~Window()
 {
     glfwDestroyWindow(window);
     glfwTerminate();
 }
 
-bool rd::Window::isAlive()
+bool sk::Window::isAlive()
 {
     glfwPollEvents();
     return not glfwWindowShouldClose(window);
 }
 
-void rd::Window::waitForEvent()
+void sk::Window::waitForEvent()
 {
     glfwWaitEvents();
 }
 
-GLFWwindow* rd::Window::getPtr()
+GLFWwindow* sk::Window::getPtr()
 {
     return window;
 }
 
-void rd::Window::getSize(int& pWidth, int& pHeight)
+void sk::Window::getSize(int& pWidth, int& pHeight)
 {
     glfwGetFramebufferSize(window, &pWidth, &pHeight);
 }
 
-void rd::Window::setResizeCallback(void (*__callback)(void))
+void sk::Window::setResizeCallback(void (*__callback)(void))
 {
     callback = __callback;
 }
 
-std::vector<const char*> rd::Window::getRequiredExtensions()
+std::vector<const char*> sk::Window::getRequiredExtensions()
 {
     // Ici on parle de instance extensions, pas device extensions
     // GLFW a lui aussi besoin de certaines extensions vulkan pour établir le lien vulkan-fenêtre
@@ -80,7 +80,7 @@ std::vector<const char*> rd::Window::getRequiredExtensions()
 }
 
 #ifdef VULKAN_RENDERER
-vk::SurfaceKHR rd::Window::createSurface(VkInstance instance)
+vk::SurfaceKHR sk::Window::createSurface(VkInstance instance)
 {
     VkSurfaceKHR tmpSurface;
     if(glfwCreateWindowSurface(instance, window, nullptr, &tmpSurface) != VK_SUCCESS)

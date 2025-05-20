@@ -51,9 +51,9 @@ namespace
             }};
             return res;
         }
-        };
+    };
 
-        struct UniformBufferObject {
+    struct UniformBufferObject {
         alignas(4) float uTime;
         alignas(16) math::vec3 uClr;
     };
@@ -83,7 +83,7 @@ namespace
 // attributs
 namespace
 {
-    std::shared_ptr<rd::Window> window;
+    std::shared_ptr<sk::Window> window;
     vk::Instance instance;
     vk::PhysicalDevice physicalDevice = VK_NULL_HANDLE;
     vk::UniqueDevice logicalDevice;
@@ -1286,22 +1286,6 @@ namespace
             logicalDevice->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
         }
     }
-    
-    void updateUniformBuffer()
-    {
-        // sera calculé une seule fois car static
-        static auto startTime = std::chrono::high_resolution_clock::now();
-        auto currentTime = std::chrono::high_resolution_clock::now();
-        float elapsedTime = std::chrono::duration<float,
-            std::chrono::seconds::period>(currentTime - startTime).count();
-        
-        UniformBufferObject ubo {
-            .uTime  = elapsedTime,
-            .uClr   = math::vec3(0.0f, 0.6f, 0.8f)
-        };
-        
-        memcpy(uniformBuffersMapped[currentFrame], &ubo, sizeof(ubo));
-    }
 
     void initVulkan()
     {
@@ -1377,18 +1361,18 @@ namespace
 };
 
 
-std::shared_ptr<rd::Window> rd::begin()
+std::shared_ptr<sk::Window> sk::begin()
 {
     currentFrame = 0;
     windowResized = false;
-    window = std::make_shared<rd::Window>(1366, 768);
+    window = std::make_shared<sk::Window>(1366, 768);
 
     initVulkan();
 
     return window;
 }
 
-void rd::end()
+void sk::end()
 {
     for(int i = 0; i < NB_FRAMES_IN_FLIGHT; i++)
     {
@@ -1413,7 +1397,17 @@ void rd::end()
     instance.destroySurfaceKHR(surface);
 }
 
-void rd::draw()
+void sk::setUniforms(float uTime, math::vec3 uClr)
+{
+    UniformBufferObject ubo = {
+        .uTime  = uTime,
+        .uClr   = uClr
+    };
+        
+    memcpy(uniformBuffersMapped[currentFrame], &ubo, sizeof(ubo));
+}
+
+void sk::draw()
 {
     // On commence par attendre que la frame précédente soit finie
     if(logicalDevice->waitForFences(1, &readyForNextFrameFences[currentFrame], vk::True, UINT64_MAX) != vk::Result::eSuccess)
@@ -1439,8 +1433,6 @@ void rd::draw()
     
     // On voudra attendre le sémaphore imageAvailable au moment du color attachment (donc entre vert et frag)
     vk::PipelineStageFlags waitStages[] = { vk::PipelineStageFlagBits::eColorAttachmentOutput };
-    
-    updateUniformBuffer();
     
     // Ensuite on peut submit le command buffer
     vk::SubmitInfo submitInfo {

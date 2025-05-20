@@ -9,7 +9,7 @@
 #include <GLFW/glfw3.h>
 #include <vector>
 
-namespace rd
+namespace sk
 {
     // Abstraction de GLFW
     class Window
